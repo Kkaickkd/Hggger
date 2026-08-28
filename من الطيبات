@@ -1,0 +1,299 @@
+javascript: (function () {
+  function startBot() {
+    if (window.wikiWpmBotExists) {
+      console.log("البوت الذكي شغال بالفعل!");
+      return;
+    }
+    window.wikiWpmBotExists = window.wikiWpmBotEnabled = true;
+
+    /* ============================================================
+       1. مفتاح Google Gemini API
+       ============================================================ */
+    const GEMINI_API_KEY = "AQ.";
+    const GEMINI_MODEL = "gemini-2.0-flash";
+    const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+
+    const settings = {
+      temperature: 0.7,
+      max_tokens: 1000,
+      systemPrompt: "أنت مساعد ذكاء اصطناعي متكامل ومفيد. رَد على المستخدم بوضوح ومهارة وبلغة عربية سلسة. لا تذكر أنك ذكاء اصطناعي إلا إذا سئلت مباشرة."
+    };
+
+    /* ============================================================
+       2. نافذة اللوق المباشرة (أعلى اليمين + حجم أصغر)
+       ============================================================ */
+    if (document.getElementById("bot-logger-panel")) {
+      document.getElementById("bot-logger-panel").remove();
+    }
+
+    const panel = document.createElement("div");
+    panel.id = "bot-logger-panel";
+    Object.assign(panel.style, {
+      position: "fixed",
+      top: "10px",
+      right: "10px",
+      width: "360px",
+      height: "200px",
+      backgroundColor: "#11111b",
+      color: "#cdd6f4",
+      border: "2px solid #89b4fa",
+      borderRadius: "8px",
+      zIndex: "999999",
+      fontFamily: "monospace",
+      fontSize: "11px",
+      display: "flex",
+      flexDirection: "column",
+      direction: "ltr",
+      boxShadow: "0 4px 20px rgba(0,0,0,0.7)",
+      overflow: "hidden"
+    });
+
+    panel.innerHTML = `
+      <div style="background: #1e1e2e; padding: 4px 8px; border-bottom: 1px solid #45475a; display: flex; justify-content: space-between; align-items: center;">
+        <b style="color: #89b4fa; font-size: 11px;">🤖 Gemini Bot Log Panel</b>
+        <div>
+          <button id="btn-copy-log" style="background: #a6e3a1; color: #11111b; border: none; padding: 2px 6px; font-weight: bold; cursor: pointer; border-radius: 4px; font-size: 10px; margin-right: 4px;">📋 نسخ اللوق</button>
+          <button id="btn-clear-log" style="background: #f38ba8; color: #11111b; border: none; padding: 2px 5px; font-weight: bold; cursor: pointer; border-radius: 4px; font-size: 10px; margin-right: 4px;">مسح</button>
+          <button id="btn-close-log" style="background: #6c7086; color: #fff; border: none; padding: 2px 5px; cursor: pointer; border-radius: 4px; font-size: 10px;">✕</button>
+        </div>
+      </div>
+      <div id="log-content" style="flex: 1; padding: 6px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; line-height: 1.3; font-size: 10px;"></div>
+    `;
+    document.body.appendChild(panel);
+
+    const logContainer = document.getElementById("log-content");
+    const copyBtn = document.getElementById("btn-copy-log");
+    const clearBtn = document.getElementById("btn-clear-log");
+    const closeBtn = document.getElementById("btn-close-log");
+
+    function addLog(msg, type = "INFO") {
+      const time = new Date().toLocaleTimeString();
+      let color = "#cdd6f4";
+      if (type === "SUCCESS") color = "#a6e3a1";
+      if (type === "ERROR") color = "#f38ba8";
+      if (type === "WARN") color = "#f9e2af";
+      if (type === "INFO") color = "#89b4fa";
+
+      const line = document.createElement("div");
+      line.style.color = color;
+      line.style.marginBottom = "2px";
+      line.innerText = `[${time}] [${type}] ${msg}`;
+      logContainer.appendChild(line);
+      logContainer.scrollTop = logContainer.scrollHeight;
+    }
+
+    copyBtn.onclick = () => {
+      navigator.clipboard.writeText(logContainer.innerText).then(() => {
+        const origText = copyBtn.innerText;
+        copyBtn.innerText = "✓ تم النسخ!";
+        setTimeout(() => (copyBtn.innerText = origText), 1500);
+      });
+    };
+    clearBtn.onclick = () => (logContainer.innerHTML = "");
+    closeBtn.onclick = () => panel.remove();
+
+    addLog("تم تشغيل البوت بنجاح وفتح نافذة اللوق المباشرة.", "SUCCESS");
+
+    /* ============================================================
+       زر التحكم الأصلي (أعلى اليسار)
+       ============================================================ */
+    const btn = document.createElement("button");
+    Object.assign(btn.style, {
+      position: "fixed",
+      top: "10px",
+      left: "10px",
+      zIndex: "99999",
+      width: "20px",
+      height: "20px",
+      borderRadius: "50%",
+      border: "2px solid #fff",
+      backgroundColor: "#2ecc71",
+      cursor: "pointer",
+      boxShadow: "0 0 8px rgba(0,0,0,0.5)",
+    });
+    btn.id = "wpm-toggle-btn";
+    btn.title = "حالة الذكاء الاصطناعي: يعمل (أخضر)";
+    document.body.appendChild(btn);
+    btn.addEventListener("click", () => {
+      window.wikiWpmBotEnabled = !window.wikiWpmBotEnabled;
+      btn.style.backgroundColor = window.wikiWpmBotEnabled ? "#2ecc71" : "#e74c3c";
+      btn.title =
+        "حالة الذكاء الاصطناعي: " +
+        (window.wikiWpmBotEnabled ? "يعمل (أخضر)" : "متوقف (أحمر)");
+      addLog(`تم تغيير حالة البوت إلى: ${window.wikiWpmBotEnabled ? 'تفعيل (أخضر)' : 'إيقاف (أحمر)'}`, "WARN");
+    });
+
+    /* ============================================================
+       دالة الإرسال الأساسية
+       ============================================================ */
+    let lastBotReplyText = "";
+    let lastBotReplyTime = 0;
+
+    function sendToChat(text) {
+      lastBotReplyText = String(text || "");
+      lastBotReplyTime = Date.now();
+      const input = document.querySelector("#tbox"),
+        btnSend = document.querySelector(".btn-primary") || document.querySelector("#sendbtn");
+      if (!input) {
+        addLog("❌ لم يتم العثور على مربع النص #tbox في الصفحة!", "ERROR");
+        return;
+      }
+      input.value = text;
+      ["input", "change"].forEach((ev) =>
+        input.dispatchEvent(new Event(ev, { bubbles: true }))
+      );
+      setTimeout(() => {
+        if (typeof Tsend_TIGERHOST_UPLOAD === "function") Tsend_TIGERHOST_UPLOAD();
+        else if (btnSend) btnSend.click();
+        addLog("تم إرسال الرد إلى الشات بنجاح.", "SUCCESS");
+      }, 10);
+    }
+
+    /* ============================================================
+       معالج الذكاء الاصطناعي (Gemini API فقط)
+       ============================================================ */
+    async function unifiedAIRequest(prompt) {
+      if (!GEMINI_API_KEY || GEMINI_API_KEY === "ضع_مفتاح_جيمناي_هنا") {
+        addLog("⚠️ لم تقم بوضع مفتاح Gemini API في الكود بعد!", "ERROR");
+        sendToChat("❌ يرجي وضع مفتاح Gemini API في السكربت أولاً.");
+        return false;
+      }
+
+      addLog(`جاري الإرسال إلى Gemini API: "${prompt}"`, "INFO");
+
+      try {
+        const res = await fetch(GEMINI_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + GEMINI_API_KEY
+          },
+          body: JSON.stringify({
+            model: GEMINI_MODEL,
+            messages: [
+              { role: "system", content: settings.systemPrompt },
+              { role: "user", content: prompt }
+            ],
+            temperature: settings.temperature,
+            max_tokens: settings.max_tokens
+          })
+        });
+
+        addLog(`رمز استجابة السيرفر (HTTP Status): ${res.status}`, res.ok ? "INFO" : "ERROR");
+
+        let data = {};
+        try { data = await res.json(); } catch (e) { data = {}; }
+
+        if (!res.ok) {
+          const errMsg = data?.error?.message || res.statusText;
+          addLog(`فشل طلب API (${res.status}): ${errMsg}`, "ERROR");
+          sendToChat("⚠️ خطأ من API: " + errMsg);
+          return false;
+        }
+
+        const reply = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content)
+          ? String(data.choices[0].message.content).trim()
+          : "";
+
+        if (reply) {
+          addLog(`تم استلام الرد من Gemini: "${reply}"`, "SUCCESS");
+          sendToChat(reply);
+          return true;
+        } else {
+          addLog(`الرد القادم من Gemini فارغ! الهيكل: ${JSON.stringify(data)}`, "WARN");
+          sendToChat("⚠️ الرد من الذكاء الاصطناعي فارغ أو غير متوقع.");
+          return false;
+        }
+
+      } catch (netErr) {
+        addLog(`خطأ في اتصال الشبكة / CORS: ${netErr.message}`, "ERROR");
+        return false;
+      }
+    }
+
+    /* ============================================================
+       مراقبة صندوق الشات (#d2) — فقط إذا بدأت الرسالة بـ "نجد!"
+       ============================================================ */
+    const chatBox = document.querySelector("#d2");
+    if (!chatBox) {
+      addLog("❌ لم يتم العثور على صندوق الشات (#d2)", "ERROR");
+      console.error("لم يتم العثور على صندوق الشات (#d2)");
+      return;
+    }
+
+    addLog("تم ربط مراقب الرسائل لصندوق الشات (#d2) بنجاح.", "SUCCESS");
+
+    const regexLeadingClean = /^[\s\-،,.]+/;
+
+    const botObserver = new MutationObserver((mutations) => {
+      if (!window.wikiWpmBotEnabled) return;
+      for (const m of mutations) {
+        for (const node of m.addedNodes) {
+          if (node.nodeType !== 1) continue;
+
+          const msgNode = node.querySelector(".u-msg, .msg") || node;
+          let msgText = msgNode.textContent || "";
+          if (!msgText) continue;
+
+          /* تجاهل ردود البوت نفسها لتجنب الحلقة */
+          if (msgText === lastBotReplyText && Date.now() - lastBotReplyTime < 8000) continue;
+
+          const trimmed = msgText.trim();
+
+          /* المنطق الصارم: فقط رسائل تبدأ بـ "نجد!" */
+          if (!trimmed.startsWith("نجد!")) {
+            continue;
+          }
+
+          addLog(`رصد رسالة تبدأ بـ "نجد!": "${trimmed}"`, "INFO");
+
+          /* إزالة اسم المرسل إذا ظهر */
+          const nameEl = node.querySelector(".u-topic, .u-name, .name");
+          if (nameEl && msgText.includes(nameEl.textContent)) {
+            msgText = msgText.replace(nameEl.textContent, "");
+          }
+
+          let cleanMsg = msgText.replace(regexLeadingClean, "").trim();
+          if (!cleanMsg) continue;
+          if (!cleanMsg.startsWith("نجد!")) continue;
+
+          const promptText = cleanMsg.replace(/^نجد!\s*/, "").trim();
+
+          if (promptText === "") {
+            addLog("الرسالة تحوي كلمة 'نجد!' فقط دون نص بعد ذلك.", "WARN");
+            sendToChat("✏️ اكتب رسالتك بعد \"نجد!\" لتتم الإجابة.");
+            return;
+          }
+
+          // إرسال الطلب إلى Gemini API
+          unifiedAIRequest(promptText);
+        }
+      }
+    });
+
+    botObserver.observe(chatBox, { childList: true, subtree: true });
+
+    /* ============================================================
+       نبضة بسيطة للتأكد من أن الزر حي
+       ============================================================ */
+    const botHeartbeat = setInterval(() => {
+      const t = document.getElementById("wpm-toggle-btn");
+      if (t) t.setAttribute("data-last-heartbeat", Date.now());
+    }, 20000);
+
+    /* ============================================================
+       إعادة التشغيل التلقائية بعد 3 ساعات
+       ============================================================ */
+    setTimeout(() => {
+      if (typeof botObserver !== "undefined" && botObserver) botObserver.disconnect();
+      if (typeof botHeartbeat !== "undefined" && botHeartbeat) clearInterval(botHeartbeat);
+      const oldBtn = document.getElementById("wpm-toggle-btn");
+      if (oldBtn) oldBtn.remove();
+      delete window.wikiWpmBotExists;
+      delete window.wikiWpmBotEnabled;
+      startBot();
+    }, 10800000);
+  }
+
+  startBot();
+})();
