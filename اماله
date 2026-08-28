@@ -1,0 +1,1597 @@
+javascript:(function () {
+function startBot() {
+if (window.najdBotExists) {
+console.log("البوت شغال بالفعل!");
+return;
+}
+
+window.najdBotExists = window.najdBotEnabled = true;
+
+/* ============================================================
+   1. الإعدادات + المفاتيح + محركات الذاكرة
+   ============================================================ */
+
+let apiKeys = [];
+let currentKeyIndex = parseInt(
+  localStorage.getItem("MY_GEMINI_KEY_INDEX") || "0",
+  10
+);
+
+// ------------------------------------------------------------
+// مفاتيح التخزين
+// ------------------------------------------------------------
+
+const STORAGE_KEYS = {
+  keys: "MY_GEMINI_KEYS_LIST",
+  keyIndex: "MY_GEMINI_KEY_INDEX",
+  rag: "NAJD_RAG_DATABASE_V2",
+  state: "NAJD_PROJECT_STATE_V2",
+  summary: "NAJD_CONVERSATION_SUMMARY_V2",
+  recent: "NAJD_RECENT_CONVERSATION_V2",
+  summaryCount: "NAJD_SUMMARY_EXCHANGE_COUNT_V2"
+};
+
+// ------------------------------------------------------------
+// إعدادات الذاكرة
+// ------------------------------------------------------------
+
+const MEMORY_SETTINGS = {
+  // آخر 10 رسائل كاملة فقط ترسل مع الطلب
+  recentMessagesLimit: 10,
+
+  // أقصى عدد سجلات RAG محفوظة
+  ragLimit: 200,
+
+  // تحديث الملخص بعد هذا العدد من المحادثات
+  summaryEvery: 10,
+
+  // أقصى طول للملخص
+  summaryMaxChars: 5000,
+
+  // أقصى عدد أحرف للسياق المسترجع من RAG
+  ragContextMaxChars: 6000
+};
+
+// ------------------------------------------------------------
+// RAG المحلي
+// ------------------------------------------------------------
+
+let ragDatabase = [];
+
+// حالة المشروع
+let currentProjectState = {};
+
+// ملخص المحادثات القديمة
+let conversationSummary = "";
+
+// آخر الرسائل
+let recentConversation = [];
+
+// عدد المحادثات منذ آخر تحديث للملخص
+let exchangesSinceSummary = parseInt(
+  localStorage.getItem(STORAGE_KEYS.summaryCount) || "0",
+  10
+);
+
+if (!Number.isFinite(exchangesSinceSummary)) {
+  exchangesSinceSummary = 0;
+}
+
+// ------------------------------------------------------------
+// تحميل الذاكرة المحفوظة
+// ------------------------------------------------------------
+
+function loadMemory() {
+  try {
+    const savedRag = localStorage.getItem(STORAGE_KEYS.rag);
+    const savedState = localStorage.getItem(STORAGE_KEYS.state);
+    const savedSummary = localStorage.getItem(STORAGE_KEYS.summary);
+    const savedRecent = localStorage.getItem(STORAGE_KEYS.recent);
+
+    if (savedRag) {
+      const parsed = JSON.parse(savedRag);
+      if (Array.isArray(parsed)) {
+        ragDatabase = parsed;
+      }
+    }
+
+    if (savedState) {
+      const parsed = JSON.parse(savedState);
+      if (parsed && typeof parsed === "object") {
+        currentProjectState = parsed;
+      }
+    }
+
+    if (savedSummary) {
+      conversationSummary = String(savedSummary).slice(
+        0,
+        MEMORY_SETTINGS.summaryMaxChars
+      );
+    }
+
+    if (savedRecent) {
+      const parsed = JSON.parse(savedRecent);
+
+      if (Array.isArray(parsed)) {
+        recentConversation = parsed
+          .filter(
+            item =>
+              item &&
+              (item.role === "user" || item.role === "model") &&
+              typeof item.text === "string"
+          )
+          .slice(-MEMORY_SETTINGS.recentMessagesLimit);
+      }
+    }
+  } catch (error) {
+    console.warn("تعذر تحميل الذاكرة:", error);
+
+    ragDatabase = [];
+    currentProjectState = {};
+    conversationSummary = "";
+    recentConversation = [];
+  }
+}
+
+function saveMemory() {
+  try {
+    localStorage.setItem(
+      STORAGE_KEYS.rag,
+      JSON.stringify(
+        ragDatabase.slice(-MEMORY_SETTINGS.ragLimit)
+      )
+    );
+
+    localStorage.setItem(
+      STORAGE_KEYS.state,
+      JSON.stringify(currentProjectState)
+    );
+
+    localStorage.setItem(
+      STORAGE_KEYS.summary,
+      conversationSummary.slice(
+        0,
+        MEMORY_SETTINGS.summaryMaxChars
+      )
+    );
+
+    localStorage.setItem(
+      STORAGE_KEYS.recent,
+      JSON.stringify(
+        recentConversation.slice(
+          -MEMORY_SETTINGS.recentMessagesLimit
+        )
+      )
+    );
+
+    localStorage.setItem(
+      STORAGE_KEYS.summaryCount,
+      String(exchangesSinceSummary)
+    );
+  } catch (error) {
+    console.warn("تعذر حفظ الذاكرة:", error);
+  }
+}
+
+loadMemory();
+
+/* ============================================================
+   2. إدارة مفاتيح Gemini
+   ============================================================ */
+
+function collectKeys() {
+  let newKeys = [];
+  let count = 1;
+
+  while (true) {
+    let input = prompt(
+      `🔑 أدخل المفتاح رقم ${count}\n(أو اكتب 'انهاء' للحفظ):`
+    );
+
+    if (input === null) break;
+
+    input = input.trim();
+
+    if (input === "انهاء" || input === "إنهاء") {
+      break;
+    }
+
+    if (input !== "") {
+      newKeys.push(input);
+      count++;
+    }
+  }
+
+  return newKeys;
+}
+
+function loadKeys() {
+  let storedKeys = localStorage.getItem(STORAGE_KEYS.keys);
+
+  if (!storedKeys || storedKeys.trim() === "") {
+    let collected = collectKeys();
+
+    if (collected.length > 0) {
+      localStorage.setItem(
+        STORAGE_KEYS.keys,
+        collected.join(",")
+      );
+
+      apiKeys = collected;
+      return true;
+    }
+
+    return false;
+  }
+
+  apiKeys = storedKeys
+    .split(",")
+    .map(k => k.trim())
+    .filter(Boolean);
+
+  return apiKeys.length > 0;
+}
+
+if (!loadKeys()) {
+  alert("لم يتم إدخال مفاتيح صالحة. تم إيقاف التشغيل.");
+  return;
+}
+
+/* ============================================================
+   3. Gemini 3.6 Flash
+   ============================================================ */
+
+const GEMINI_MODEL = "gemini-3.6-flash";
+
+const settings = {
+  max_tokens: 800,
+
+  systemPrompt: `أنت وكيل ذكي متقدم لبرمجة وأتمتة المهام مثل معالجة النصوص وسحب البيانات والسكربتات.
+
+أجب بكلمات قليلة جداً وبدون تنسيقات ماركداون.
+
+يجب أن تعتمد على سياق المحادثة الحالي والملخص والمعلومات المسترجعة وحالة المشروع عند الإجابة.
+
+إذا قال المستخدم كلاماً قصيراً مثل:
+"طيب"
+"كمّل"
+"وش تقصد"
+"لا"
+"سوّه"
+"غيره"
+
+فلا تعتبره سؤالاً جديداً منفصلاً، بل اربطه بالسياق السابق.
+
+لا تبدأ الموضوع من جديد إذا كان السؤال استمراراً لما قبله.
+
+[قاعدة صارمة للذاكرة - JSON State]
+
+في نهاية كل رد، يجب أن تستخرج حالة المشروع الحالية وتكتبها بصيغة JSON صحيحة حصراً داخل وسم <state> و </state>.
+
+مثال:
+
+<state>
+{"topic":"text processing","task":"adding delays","language":"python"}
+</state>يجب أن يحتوي state على المعلومات المهمة والمستقرة التي يحتاجها الذكاء الاصطناعي لاحقاً لفهم المشروع.
+
+لا تضع أي كلام آخر داخل state.`
+};
+
+/* ============================================================
+   4. البحث المطور في RAG
+   ============================================================ */
+
+function normalizeText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[ًٌٍَُِّْـ]/g, "")
+    .replace(/[^\u0600-\u06FFa-zA-Z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractKeywords(text) {
+  return normalizeText(text)
+    .split(/\s+/)
+    .filter(word => word.length >= 3)
+    .filter(
+      (word, index, array) =>
+        array.indexOf(word) === index
+    );
+}
+
+function searchRAG(query) {
+  if (!ragDatabase.length) {
+    return [];
+  }
+
+  const keywords = extractKeywords(query);
+
+  if (!keywords.length) {
+    return [];
+  }
+
+  const scored = ragDatabase.map((entry, index) => {
+    const entryText = normalizeText(entry.text);
+
+    let score = 0;
+
+    for (const keyword of keywords) {
+      if (entryText.includes(keyword)) {
+        score++;
+
+        // تطابق أقوى للكلمة الأطول
+        if (keyword.length >= 6) {
+          score += 0.5;
+        }
+      }
+    }
+
+    // إعطاء أفضلية بسيطة للذكريات الأحدث
+    const ageBonus =
+      index / Math.max(ragDatabase.length, 1) * 0.25;
+
+    return {
+      ...entry,
+      score: score + ageBonus
+    };
+  });
+
+  return scored
+    .filter(entry => entry.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 4);
+}
+
+function buildRAGContext(matches) {
+  if (!matches.length) {
+    return "";
+  }
+
+  let text =
+    "معلومات مرتبطة مسترجعة من الذاكرة القديمة:\n";
+
+  for (const item of matches) {
+    const role =
+      item.role === "user"
+        ? "المستخدم"
+        : "الذكاء الاصطناعي";
+
+    const line = `- ${role}: ${item.text}`;
+
+    if (
+      text.length + line.length >
+      MEMORY_SETTINGS.ragContextMaxChars
+    ) {
+      break;
+    }
+
+    text += line + "\n";
+  }
+
+  return text.trim();
+}
+
+/* ============================================================
+   5. لوحة التحكم واللوق
+   ============================================================ */
+
+if (document.getElementById("bot-logger-panel")) {
+  document.getElementById("bot-logger-panel").remove();
+}
+
+const panel = document.createElement("div");
+
+panel.id = "bot-logger-panel";
+
+Object.assign(panel.style, {
+  position: "fixed",
+  top: "10px",
+  right: "10px",
+  width: "380px",
+  height: "220px",
+  backgroundColor: "#11111b",
+  color: "#cdd6f4",
+  border: "2px solid #89b4fa",
+  borderRadius: "8px",
+  zIndex: "999999",
+  fontFamily: "monospace",
+  fontSize: "11px",
+  display: "flex",
+  flexDirection: "column",
+  direction: "ltr",
+  boxShadow: "0 4px 20px rgba(0,0,0,0.7)",
+  overflow: "hidden"
+});
+
+panel.innerHTML = `
+  <div style="
+    background:#1e1e2e;
+    padding:4px 8px;
+    border-bottom:1px solid #45475a;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+  ">
+    <b style="color:#89b4fa;font-size:11px;">
+      🤖 Agentic RAG Bot - Gemini 3.6
+    </b>
+
+    <div>
+      <button id="btn-key-log"
+        style="
+          background:#f9e2af;
+          color:#11111b;
+          border:none;
+          padding:2px 5px;
+          cursor:pointer;
+          border-radius:4px;
+          font-size:10px;
+        ">
+        🔑
+      </button>
+
+      <button id="btn-clear-log"
+        style="
+          background:#f38ba8;
+          color:#11111b;
+          border:none;
+          padding:2px 4px;
+          cursor:pointer;
+          border-radius:4px;
+          font-size:10px;
+        ">
+        مسح
+      </button>
+
+      <button id="btn-close-log"
+        style="
+          background:#6c7086;
+          color:#fff;
+          border:none;
+          padding:2px 4px;
+          cursor:pointer;
+          border-radius:4px;
+          font-size:10px;
+        ">
+        ✕
+      </button>
+    </div>
+  </div>
+
+  <div id="log-content"
+    style="
+      flex:1;
+      padding:6px;
+      overflow-y:auto;
+      white-space:pre-wrap;
+      word-break:break-all;
+      line-height:1.3;
+    ">
+  </div>
+`;
+
+document.body.appendChild(panel);
+
+const logContainer =
+  document.getElementById("log-content");
+
+function addLog(msg, type = "INFO") {
+  if (!logContainer) return;
+
+  const time = new Date().toLocaleTimeString();
+
+  let color = "#cdd6f4";
+
+  if (type === "SUCCESS") color = "#a6e3a1";
+  if (type === "ERROR") color = "#f38ba8";
+  if (type === "RAG") color = "#f5c2e7";
+  if (type === "STATE") color = "#fab387";
+  if (type === "WARN") color = "#f9e2af";
+  if (type === "MEMORY") color = "#89dceb";
+
+  const line = document.createElement("div");
+
+  line.style.color = color;
+  line.style.marginBottom = "3px";
+
+  line.innerText =
+    `[${time}] [${type}] ${msg}`;
+
+  logContainer.appendChild(line);
+
+  logContainer.scrollTop =
+    logContainer.scrollHeight;
+}
+
+document.getElementById("btn-key-log").onclick = () => {
+  const collected = collectKeys();
+
+  if (collected.length > 0) {
+    localStorage.setItem(
+      STORAGE_KEYS.keys,
+      collected.join(",")
+    );
+
+    localStorage.setItem(
+      STORAGE_KEYS.keyIndex,
+      "0"
+    );
+
+    currentKeyIndex = 0;
+    apiKeys = collected;
+
+    addLog(
+      `تم اعتماد ${apiKeys.length} مفاتيح بنجاح!`,
+      "SUCCESS"
+    );
+  }
+};
+
+document.getElementById("btn-clear-log").onclick = () => {
+  logContainer.innerHTML = "";
+};
+
+document.getElementById("btn-close-log").onclick = () => {
+  panel.remove();
+};
+
+addLog(
+  `تم تحميل الذاكرة: ${recentConversation.length} رسائل قريبة + ${ragDatabase.length} سجل RAG`,
+  "MEMORY"
+);
+
+if (conversationSummary) {
+  addLog(
+    "تم تحميل ملخص المحادثة السابقة",
+    "MEMORY"
+  );
+}
+
+/* ============================================================
+   6. زر تشغيل / إيقاف
+   ============================================================ */
+
+const btn = document.createElement("button");
+
+Object.assign(btn.style, {
+  position: "fixed",
+  top: "10px",
+  left: "10px",
+  zIndex: "99999",
+  width: "20px",
+  height: "20px",
+  borderRadius: "50%",
+  border: "2px solid #fff",
+  backgroundColor: "#2ecc71",
+  cursor: "pointer",
+  boxShadow: "0 0 8px rgba(0,0,0,0.5)"
+});
+
+document.body.appendChild(btn);
+
+btn.onclick = () => {
+  window.najdBotEnabled =
+    !window.najdBotEnabled;
+
+  btn.style.backgroundColor =
+    window.najdBotEnabled
+      ? "#2ecc71"
+      : "#e74c3c";
+
+  addLog(
+    `تم ${
+      window.najdBotEnabled
+        ? "تفعيل"
+        : "إيقاف"
+    } البوت`,
+    "WARN"
+  );
+};
+
+/* ============================================================
+   7. منع التكرار ومراقبة رسائل البوت
+   ============================================================ */
+
+const sentBotMessages = new Map();
+
+function markBotMessage(text) {
+  const key = String(text || "");
+
+  sentBotMessages.set(key, Date.now());
+
+  // تنظيف الرسائل القديمة
+  for (const [message, timestamp] of sentBotMessages) {
+    if (Date.now() - timestamp > 30000) {
+      sentBotMessages.delete(message);
+    }
+  }
+}
+
+function isRecentBotMessage(text) {
+  const timestamp =
+    sentBotMessages.get(String(text || ""));
+
+  if (!timestamp) return false;
+
+  if (Date.now() - timestamp < 30000) {
+    return true;
+  }
+
+  sentBotMessages.delete(String(text || ""));
+  return false;
+}
+
+/* ============================================================
+   8. إرسال النص للشات
+   ============================================================ */
+
+function sendToChat(text) {
+  text = String(text || "").trim();
+
+  if (!text) return;
+
+  markBotMessage(text);
+
+  const input =
+    document.querySelector("#tbox");
+
+  const btnSend =
+    document.querySelector(".btn-primary") ||
+    document.querySelector("#sendbtn");
+
+  if (!input) {
+    addLog(
+      "❌ لم يتم العثور على مربع النص!",
+      "ERROR"
+    );
+
+    return;
+  }
+
+  input.value = text;
+
+  ["input", "change"].forEach(ev => {
+    input.dispatchEvent(
+      new Event(ev, {
+        bubbles: true
+      })
+    );
+  });
+
+  setTimeout(() => {
+    if (
+      typeof Tsend_TIGERHOST_UPLOAD ===
+      "function"
+    ) {
+      Tsend_TIGERHOST_UPLOAD();
+    } else if (btnSend) {
+      btnSend.click();
+    } else {
+      addLog(
+        "❌ لم يتم العثور على زر الإرسال!",
+        "ERROR"
+      );
+
+      return;
+    }
+
+    addLog(
+      "تم إرسال جزء للشات بنجاح",
+      "SUCCESS"
+    );
+  }, 50);
+}
+
+/* ============================================================
+   9. معالجة وتقسيم الرد
+   ============================================================ */
+
+function processAndSendReply(fullReply) {
+  let cleanText =
+    String(fullReply || "")
+      .replace(/[*_~`#\[\]\(\)>\\-]/g, "")
+      .trim();
+
+  const words =
+    cleanText
+      .split(/\s+/)
+      .filter(Boolean);
+
+  if (words.length === 0) return;
+
+  const chunks = [];
+
+  for (
+    let i = 0;
+    i < words.length;
+    i += 49
+  ) {
+    chunks.push(
+      words
+        .slice(i, i + 49)
+        .join(" ")
+    );
+  }
+
+  addLog(
+    `عدد كلمات الرد: ${words.length}. سيتم إرساله على ${chunks.length} رسالة`,
+    "INFO"
+  );
+
+  chunks.forEach((chunk, index) => {
+    setTimeout(() => {
+      sendToChat(chunk);
+    }, index * 1500);
+  });
+}
+
+/* ============================================================
+   10. استخراج JSON State
+   ============================================================ */
+
+function extractStateFromReply(reply) {
+  const stateMatch =
+    String(reply || "").match(
+      /<state>([\s\S]*?)<\/state>/i
+    );
+
+  if (!stateMatch) {
+    return {
+      reply: String(reply || "").trim(),
+      stateUpdated: false
+    };
+  }
+
+  let cleanReply =
+    String(reply || "")
+      .replace(
+        /<state>[\s\S]*?<\/state>/ig,
+        ""
+      )
+      .trim();
+
+  try {
+    const parsedState =
+      JSON.parse(
+        stateMatch[1].trim()
+      );
+
+    if (
+      parsedState &&
+      typeof parsedState === "object" &&
+      !Array.isArray(parsedState)
+    ) {
+      currentProjectState = {
+        ...currentProjectState,
+        ...parsedState
+      };
+
+      saveMemory();
+
+      addLog(
+        "تم تحديث حالة المشروع ⚙️",
+        "STATE"
+      );
+
+      return {
+        reply: cleanReply,
+        stateUpdated: true
+      };
+    }
+  } catch (error) {
+    addLog(
+      "فشل قراءة JSON من Gemini",
+      "WARN"
+    );
+  }
+
+  return {
+    reply: cleanReply,
+    stateUpdated: false
+  };
+}
+
+/* ============================================================
+   11. إضافة المحادثة إلى الذاكرة
+   ============================================================ */
+
+function saveConversationTurn(userText, modelText) {
+  // الذاكرة القريبة
+  recentConversation.push({
+    role: "user",
+    text: userText
+  });
+
+  recentConversation.push({
+    role: "model",
+    text: modelText
+  });
+
+  recentConversation =
+    recentConversation.slice(
+      -MEMORY_SETTINGS.recentMessagesLimit
+    );
+
+  // RAG
+  ragDatabase.push({
+    role: "user",
+    text: userText
+  });
+
+  ragDatabase.push({
+    role: "model",
+    text: modelText
+  });
+
+  ragDatabase =
+    ragDatabase.slice(
+      -MEMORY_SETTINGS.ragLimit
+    );
+
+  exchangesSinceSummary++;
+
+  saveMemory();
+}
+
+/* ============================================================
+   12. تحديث الملخص الذكي
+   
+   لا يرسل المحادثة كاملة.
+   يرسل:
+   - الملخص القديم
+   - آخر الرسائل فقط
+   ============================================================ */
+
+let summaryUpdateRunning = false;
+
+async function updateConversationSummary() {
+  if (summaryUpdateRunning) return;
+
+  if (!recentConversation.length) return;
+
+  summaryUpdateRunning = true;
+
+  try {
+    let recentText =
+      recentConversation
+        .map(item => {
+          const role =
+            item.role === "user"
+              ? "المستخدم"
+              : "الذكاء الاصطناعي";
+
+          return `${role}: ${item.text}`;
+        })
+        .join("\n");
+
+    const summaryPrompt = `
+
+لديك ملخص سابق لمحادثة طويلة، ومعه آخر جزء من المحادثة.
+
+حدّث الملخص بحيث يحتفظ فقط بالمعلومات المهمة والمستقرة التي يحتاجها الذكاء الاصطناعي لفهم المحادثة لاحقاً.
+
+لا تكتب حواراً كاملاً.
+لا تكرر الكلام بلا فائدة.
+لا تضف معلومات غير موجودة.
+حافظ على القرارات والطلبات والمشاكل والأهداف المهمة.
+اجعل الملخص مختصراً وواضحاً.
+
+الملخص السابق:
+${conversationSummary || "لا يوجد ملخص سابق."}
+
+آخر جزء من المحادثة:
+${recentText}
+
+أرجع الملخص فقط بدون Markdown وبدون مقدمات.
+`;
+
+    const reply =
+      await callGeminiRaw(
+        summaryPrompt,
+        `أنت نظام إدارة ذاكرة. أنشئ ملخصاً دقيقاً ومختصراً للمحادثة.
+
+لا تخترع أي معلومات.
+أعد الملخص فقط.`,
+"SUMMARY"
+);
+
+    if (reply) {
+      conversationSummary =
+        reply
+          .replace(/[*_~`#]/g, "")
+          .trim()
+          .slice(
+            0,
+            MEMORY_SETTINGS.summaryMaxChars
+          );
+
+      exchangesSinceSummary = 0;
+
+      saveMemory();
+
+      addLog(
+        "تم تحديث ملخص المحادثة الذكي 🧠",
+        "MEMORY"
+      );
+    }
+  } catch (error) {
+    addLog(
+      `فشل تحديث ملخص الذاكرة: ${error.message}`,
+      "WARN"
+    );
+  } finally {
+    summaryUpdateRunning = false;
+  }
+}
+
+/* ============================================================
+   13. استدعاء Gemini الخام
+   ============================================================ */
+
+async function callGeminiRaw(
+  promptText,
+  systemPrompt,
+  purpose = "NORMAL",
+  retryCount = 0
+) {
+  if (apiKeys.length === 0) {
+    return "";
+  }
+
+  if (retryCount >= apiKeys.length) {
+    addLog(
+      `❌ جميع المفاتيح استنفدت أثناء ${purpose}`,
+      "ERROR"
+    );
+
+    return "";
+  }
+
+  currentKeyIndex =
+    currentKeyIndex % apiKeys.length;
+
+  const activeKey =
+    apiKeys[currentKeyIndex];
+
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/` +
+    `${GEMINI_MODEL}:generateContent?key=${activeKey}`;
+
+  try {
+    const response =
+      await fetch(url, {
+        method: "POST",
+
+        headers: {
+          "Content-Type":
+            "application/json"
+        },
+
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [
+              {
+                text: systemPrompt
+              }
+            ]
+          },
+
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  text: promptText
+                }
+              ]
+            }
+          ],
+
+          generationConfig: {
+            maxOutputTokens:
+              purpose === "SUMMARY"
+                ? 500
+                : settings.max_tokens
+          }
+        })
+      });
+
+    const data =
+      await response.json();
+
+    if (!response.ok) {
+      if (
+        [429, 403, 503].includes(
+          response.status
+        )
+      ) {
+        addLog(
+          `⚠️ تبديل المفتاح من رقم ${
+            currentKeyIndex + 1
+          } أثناء ${purpose}`,
+          "WARN"
+        );
+
+        currentKeyIndex =
+          (currentKeyIndex + 1) %
+          apiKeys.length;
+
+        localStorage.setItem(
+          STORAGE_KEYS.keyIndex,
+          String(currentKeyIndex)
+        );
+
+        return callGeminiRaw(
+          promptText,
+          systemPrompt,
+          purpose,
+          retryCount + 1
+        );
+      }
+
+      addLog(
+        `فشل طلب Gemini (${response.status}): ${
+          data?.error?.message ||
+          response.statusText
+        }`,
+        "ERROR"
+      );
+
+      return "";
+    }
+
+    return (
+      data
+        ?.candidates?.[0]
+        ?.content?.parts?.[0]
+        ?.text
+        ?.trim() || ""
+    );
+
+  } catch (error) {
+    addLog(
+      `خطأ اتصال أثناء ${purpose}: ${error.message}`,
+      "ERROR"
+    );
+
+    return "";
+  }
+}
+
+/* ============================================================
+   14. طابور الطلبات
+   
+   يمنع تداخل عدة أسئلة مع بعضها.
+   ============================================================ */
+
+let requestQueue =
+  Promise.resolve();
+
+function enqueueRequest(promptText) {
+  requestQueue =
+    requestQueue
+      .then(() =>
+        requestGeminiAPI(promptText)
+      )
+      .catch(error => {
+        addLog(
+          `خطأ في طابور الطلبات: ${error.message}`,
+          "ERROR"
+        );
+      });
+
+  return requestQueue;
+}
+
+/* ============================================================
+   15. الطلب الرئيسي إلى Gemini
+   ============================================================ */
+
+async function requestGeminiAPI(
+  promptText,
+  retryCount = 0
+) {
+  if (!promptText) return;
+
+  if (apiKeys.length === 0) {
+    addLog(
+      "❌ لا توجد مفاتيح API",
+      "ERROR"
+    );
+
+    return;
+  }
+
+  if (retryCount >= apiKeys.length) {
+    addLog(
+      "❌ جميع المفاتيح استنفدت!",
+      "ERROR"
+    );
+
+    return;
+  }
+
+  currentKeyIndex =
+    currentKeyIndex % apiKeys.length;
+
+  /* ----------------------------------------------------------
+     RAG
+     ---------------------------------------------------------- */
+
+  const relevantContext =
+    searchRAG(promptText);
+
+  const ragContext =
+    buildRAGContext(
+      relevantContext
+    );
+
+  if (relevantContext.length > 0) {
+    addLog(
+      `تم استرجاع ${relevantContext.length} سجلات من RAG`,
+      "RAG"
+    );
+  }
+
+  /* ----------------------------------------------------------
+     الملخص القديم
+     ---------------------------------------------------------- */
+
+  let summaryContext = "";
+
+  if (conversationSummary) {
+    summaryContext =
+      `ملخص المحادثة القديمة والمهمة:\n${conversationSummary}`;
+  }
+
+  /* ----------------------------------------------------------
+     JSON State
+     ---------------------------------------------------------- */
+
+  let stateContext = "";
+
+  if (
+    Object.keys(currentProjectState)
+      .length > 0
+  ) {
+    stateContext =
+      `حالة المشروع الحالية:\n${JSON.stringify(
+        currentProjectState
+      )}`;
+  }
+
+  /* ----------------------------------------------------------
+     System Prompt ديناميكي
+     ---------------------------------------------------------- */
+
+  let activeSystemPrompt =
+    settings.systemPrompt;
+
+  if (summaryContext) {
+    activeSystemPrompt +=
+      `\n\n[الذاكرة طويلة المدى]\n${summaryContext}`;
+  }
+
+  if (stateContext) {
+    activeSystemPrompt +=
+      `\n\n[حالة المشروع]\n${stateContext}`;
+  }
+
+  if (ragContext) {
+    activeSystemPrompt +=
+      `\n\n[معلومات مسترجعة من الذاكرة]\n${ragContext}`;
+  }
+
+  /* ----------------------------------------------------------
+     آخر الرسائل فقط
+     ---------------------------------------------------------- */
+
+  let contents = [];
+
+  for (const message of recentConversation.slice(
+    -MEMORY_SETTINGS.recentMessagesLimit
+  )) {
+    contents.push({
+      role:
+        message.role === "model"
+          ? "model"
+          : "user",
+
+      parts: [
+        {
+          text: message.text
+        }
+      ]
+    });
+  }
+
+  // الرسالة الحالية في النهاية
+  contents.push({
+    role: "user",
+
+    parts: [
+      {
+        text: promptText
+      }
+    ]
+  });
+
+  const activeKey =
+    apiKeys[currentKeyIndex];
+
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/` +
+    `${GEMINI_MODEL}:generateContent?key=${activeKey}`;
+
+  try {
+    addLog(
+      `جاري الإرسال إلى ${GEMINI_MODEL}...`,
+      "INFO"
+    );
+
+    const response =
+      await fetch(url, {
+        method: "POST",
+
+        headers: {
+          "Content-Type":
+            "application/json"
+        },
+
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [
+              {
+                text:
+                  activeSystemPrompt
+              }
+            ]
+          },
+
+          contents: contents,
+
+          generationConfig: {
+            maxOutputTokens:
+              settings.max_tokens
+          }
+        })
+      });
+
+    const data =
+      await response.json();
+
+    /* --------------------------------------------------------
+       تبديل المفتاح
+       -------------------------------------------------------- */
+
+    if (!response.ok) {
+      if (
+        [429, 403, 503].includes(
+          response.status
+        )
+      ) {
+        addLog(
+          `⚠️ المفتاح رقم ${
+            currentKeyIndex + 1
+          } لم ينجح، الانتقال للمفتاح التالي...`,
+          "WARN"
+        );
+
+        currentKeyIndex =
+          (currentKeyIndex + 1) %
+          apiKeys.length;
+
+        localStorage.setItem(
+          STORAGE_KEYS.keyIndex,
+          String(currentKeyIndex)
+        );
+
+        return requestGeminiAPI(
+          promptText,
+          retryCount + 1
+        );
+      }
+
+      addLog(
+        `فشل طلب Gemini (${response.status}): ${
+          data?.error?.message ||
+          response.statusText
+        }`,
+        "ERROR"
+      );
+
+      return;
+    }
+
+    /* --------------------------------------------------------
+       استخراج الرد
+       -------------------------------------------------------- */
+
+    let reply =
+      data
+        ?.candidates?.[0]
+        ?.content?.parts?.[0]
+        ?.text
+        ?.trim();
+
+    if (!reply) {
+      addLog(
+        "⚠️ Gemini أرجع ردًا فارغًا!",
+        "WARN"
+      );
+
+      return;
+    }
+
+    /* --------------------------------------------------------
+       استخراج State
+       -------------------------------------------------------- */
+
+    const stateResult =
+      extractStateFromReply(
+        reply
+      );
+
+    reply =
+      stateResult.reply;
+
+    if (!reply) {
+      reply = "تم تحديث الحالة.";
+    }
+
+    /* --------------------------------------------------------
+       حفظ المحادثة
+       -------------------------------------------------------- */
+
+    saveConversationTurn(
+      promptText,
+      reply
+    );
+
+    addLog(
+      `تم حفظ المحادثة في الذاكرة (${recentConversation.length} رسالة قريبة / ${ragDatabase.length} سجل RAG)`,
+      "MEMORY"
+    );
+
+    /* --------------------------------------------------------
+       تحديث الملخص عند الحاجة
+       -------------------------------------------------------- */
+
+    if (
+      exchangesSinceSummary >=
+      MEMORY_SETTINGS.summaryEvery
+    ) {
+      // لا نوقف إرسال الرد بسبب تحديث الملخص
+      setTimeout(() => {
+        updateConversationSummary();
+      }, 100);
+    }
+
+    /* --------------------------------------------------------
+       إرسال الرد
+       -------------------------------------------------------- */
+
+    addLog(
+      "تم استلام الرد من Gemini 3.6 بنجاح",
+      "SUCCESS"
+    );
+
+    processAndSendReply(reply);
+
+  } catch (error) {
+    addLog(
+      `خطأ اتصال: ${error.message}`,
+      "ERROR"
+    );
+  }
+}
+
+/* ============================================================
+   16. فرمتة الذاكرة
+   ============================================================ */
+
+function clearAllMemory() {
+  ragDatabase = [];
+  currentProjectState = {};
+  conversationSummary = "";
+  recentConversation = [];
+  exchangesSinceSummary = 0;
+
+  localStorage.removeItem(
+    STORAGE_KEYS.rag
+  );
+
+  localStorage.removeItem(
+    STORAGE_KEYS.state
+  );
+
+  localStorage.removeItem(
+    STORAGE_KEYS.summary
+  );
+
+  localStorage.removeItem(
+    STORAGE_KEYS.recent
+  );
+
+  localStorage.removeItem(
+    STORAGE_KEYS.summaryCount
+  );
+
+  addLog(
+    "تمت فرمتة الذاكرة بالكامل: RAG + Recent Memory + Summary + JSON State 🧹",
+    "WARN"
+  );
+
+  sendToChat(
+    "تم مسح الذاكرة وحالة المشروع. نبدأ من الصفر!"
+  );
+}
+
+/* ============================================================
+   17. مراقبة رسائل الشات
+   ============================================================ */
+
+const chatBox =
+  document.querySelector("#d2");
+
+if (!chatBox) {
+  addLog(
+    "❌ لم يتم العثور على صندوق الشات (#d2)",
+    "ERROR"
+  );
+
+  return;
+}
+
+const regexLeadingClean =
+  /^[\s\-،,.]+/;
+
+const botObserver =
+  new MutationObserver(
+    mutations => {
+
+      if (!window.najdBotEnabled) {
+        return;
+      }
+
+      for (const mutation of mutations) {
+
+        for (const node of mutation.addedNodes) {
+
+          if (node.nodeType !== 1) {
+            continue;
+          }
+
+          const msgNode =
+            node.querySelector(
+              ".u-msg, .msg"
+            ) || node;
+
+          let msgText =
+            msgNode.textContent || "";
+
+          if (!msgText.trim()) {
+            continue;
+          }
+
+          /*
+           * منع البوت من قراءة رسائله هو
+           */
+          if (
+            isRecentBotMessage(
+              msgText.trim()
+            )
+          ) {
+            continue;
+          }
+
+          let trimmed =
+            msgText.trim();
+
+          /*
+           * Trigger:
+           * نجد
+           * نجد!
+           */
+          if (
+            !trimmed.startsWith("نجد")
+          ) {
+            continue;
+          }
+
+          const nameEl =
+            node.querySelector(
+              ".u-topic, .u-name, .name"
+            );
+
+          if (
+            nameEl &&
+            nameEl.textContent &&
+            msgText.includes(
+              nameEl.textContent
+            )
+          ) {
+            msgText =
+              msgText.replace(
+                nameEl.textContent,
+                ""
+              );
+          }
+
+          let cleanMsg =
+            msgText
+              .replace(
+                regexLeadingClean,
+                ""
+              )
+              .trim();
+
+          if (
+            !cleanMsg.startsWith("نجد")
+          ) {
+            continue;
+          }
+
+          /*
+           * إزالة نجد أو نجد!
+           */
+          const promptMsg =
+            cleanMsg
+              .replace(
+                /^نجد!?\s*/,
+                ""
+              )
+              .trim();
+
+          if (!promptMsg) {
+            continue;
+          }
+
+          /* --------------------------------------------------
+             أوامر الذاكرة
+             -------------------------------------------------- */
+
+          if (
+            promptMsg === "فرمتة" ||
+            promptMsg === "امسح الذاكرة"
+          ) {
+            clearAllMemory();
+            continue;
+          }
+
+          addLog(
+            `رصد رسالة: "${promptMsg}"`,
+            "INFO"
+          );
+
+          /*
+           * وضع الطلب في الطابور حتى لا تتداخل
+           * المحادثات مع بعضها.
+           */
+          enqueueRequest(
+            promptMsg
+          );
+        }
+      }
+    }
+  );
+
+botObserver.observe(
+  chatBox,
+  {
+    childList: true,
+    subtree: true
+  }
+);
+
+addLog(
+  "تم تشغيل البوت باستخدام Gemini 3.6 Flash مع الذاكرة الهجينة 🧠🚀",
+  "SUCCESS"
+);
+
+}
+
+startBot();
+
+})();
