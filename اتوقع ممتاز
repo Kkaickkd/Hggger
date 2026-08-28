@@ -1,0 +1,318 @@
+javascript: (function () {
+  function startBot() {
+    if (window.najdBotExists) {
+      console.log("البوت شغال بالفعل!");
+      return;
+    }
+    window.najdBotExists = window.najdBotEnabled = true;
+
+    /* ============================================================
+       1. الإعدادات والنموذج
+       ============================================================ */
+    let apiKeys = [];
+    let currentKeyIndex = parseInt(localStorage.getItem("MY_GEMINI_KEY_INDEX") || "0");
+    
+    // دالة جمع المفاتيح حبة حبة
+    function collectKeys() {
+      let newKeys = [];
+      let count = 1;
+      while (true) {
+        let input = prompt(`🔑 أدخل المفتاح رقم ${count}\n(أو اكتب 'انهاء' للحفظ والخروج):`);
+        if (input === null) break; // إذا ضغط المستخدم إلغاء
+        
+        input = input.trim();
+        if (input === "انهاء" || input === "إنهاء") {
+          break; // الخروج من الحلقة عند كتابة انهاء
+        }
+        
+        if (input !== "") {
+          newKeys.push(input);
+          count++;
+        }
+      }
+      return newKeys;
+    }
+
+    function loadKeys() {
+      let storedKeys = localStorage.getItem("MY_GEMINI_KEYS_LIST");
+      if (!storedKeys || storedKeys.trim() === "") {
+        let collected = collectKeys();
+        if (collected.length > 0) {
+          localStorage.setItem("MY_GEMINI_KEYS_LIST", collected.join(","));
+          apiKeys = collected;
+          return true;
+        } else {
+          return false;
+        }
+      }
+      apiKeys = storedKeys.split(",").map(k => k.trim()).filter(k => k);
+      return apiKeys.length > 0;
+    }
+
+    if (!loadKeys()) {
+      alert("لم يتم إدخال مفاتيح صالحة. تم إيقاف التشغيل.");
+      return;
+    }
+
+    // النموذج الثابت حسب طلبك
+    const GEMINI_MODEL = "gemini-3.6-flash";
+
+    const settings = {
+      temperature: 0.3, // تقليل العشوائية ليكون الرد مباشراً أكثر
+      max_tokens: 600,
+      // تعليمات صارمة للذكاء الاصطناعي
+      systemPrompt: "أنت مساعد ذكي موجز ومباشر جداً. أجب على المطلوب مباشرة وبأقل قدر ممكن من الكلمات. يمنع تماماً استخدام أي رموز أو إيموجي أو تنسيقات ماركداون (*, #, _, -) أو كلام جانبي ومقدمات وتوضيحات. أقصى حد مسموح لردك بالكامل هو 200 كلمة فقط."
+    };
+
+    /* ============================================================
+       2. نافذة اللوق المباشرة
+       ============================================================ */
+    if (document.getElementById("bot-logger-panel")) {
+      document.getElementById("bot-logger-panel").remove();
+    }
+
+    const panel = document.createElement("div");
+    panel.id = "bot-logger-panel";
+    Object.assign(panel.style, {
+      position: "fixed", top: "10px", right: "10px", width: "360px", height: "200px",
+      backgroundColor: "#11111b", color: "#cdd6f4", border: "2px solid #89b4fa",
+      borderRadius: "8px", zIndex: "999999", fontFamily: "monospace", fontSize: "11px",
+      display: "flex", flexDirection: "column", direction: "ltr",
+      boxShadow: "0 4px 20px rgba(0,0,0,0.7)", overflow: "hidden"
+    });
+
+    panel.innerHTML = `
+      <div style="background: #1e1e2e; padding: 4px 8px; border-bottom: 1px solid #45475a; display: flex; justify-content: space-between; align-items: center;">
+        <b style="color: #89b4fa; font-size: 11px;">🤖 Gemini Auto-Switch Bot</b>
+        <div>
+          <button id="btn-key-log" style="background: #f9e2af; color: #11111b; border: none; padding: 2px 5px; font-weight: bold; cursor: pointer; border-radius: 4px; font-size: 10px; margin-right: 3px;">🔑 المفاتيح</button>
+          <button id="btn-clear-log" style="background: #f38ba8; color: #11111b; border: none; padding: 2px 4px; font-weight: bold; cursor: pointer; border-radius: 4px; font-size: 10px; margin-right: 3px;">مسح</button>
+          <button id="btn-close-log" style="background: #6c7086; color: #fff; border: none; padding: 2px 4px; cursor: pointer; border-radius: 4px; font-size: 10px;">✕</button>
+        </div>
+      </div>
+      <div id="log-content" style="flex: 1; padding: 6px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; line-height: 1.3; font-size: 10px;"></div>
+    `;
+    document.body.appendChild(panel);
+
+    const logContainer = document.getElementById("log-content");
+    
+    function addLog(msg, type = "INFO") {
+      const time = new Date().toLocaleTimeString();
+      let color = "#cdd6f4";
+      if (type === "SUCCESS") color = "#a6e3a1";
+      if (type === "ERROR") color = "#f38ba8";
+      if (type === "WARN") color = "#f9e2af";
+      if (type === "INFO") color = "#89b4fa";
+      const line = document.createElement("div");
+      line.style.color = color; line.style.marginBottom = "2px";
+      line.innerText = `[${time}] [${type}] ${msg}`;
+      logContainer.appendChild(line);
+      logContainer.scrollTop = logContainer.scrollHeight;
+    }
+
+    // زر تغيير المفاتيح
+    document.getElementById("btn-key-log").onclick = () => {
+      let collected = collectKeys();
+      if (collected.length > 0) {
+        localStorage.setItem("MY_GEMINI_KEYS_LIST", collected.join(","));
+        localStorage.setItem("MY_GEMINI_KEY_INDEX", "0"); 
+        currentKeyIndex = 0;
+        apiKeys = collected;
+        addLog(`تم حفظ واعتماد ${apiKeys.length} مفاتيح جديدة بنجاح!`, "SUCCESS");
+      } else {
+        addLog("لم يتم حفظ مفاتيح جديدة. يتم استخدام المفاتيح السابقة.", "WARN");
+      }
+    };
+
+    document.getElementById("btn-clear-log").onclick = () => (logContainer.innerHTML = "");
+    document.getElementById("btn-close-log").onclick = () => panel.remove();
+
+    addLog(`تم تشغيل البوت بنجاح! عدد المفاتيح المحملة: ${apiKeys.length}`, "SUCCESS");
+
+    /* ============================================================
+       زر التحكم (أخضر/أحمر)
+       ============================================================ */
+    const btn = document.createElement("button");
+    Object.assign(btn.style, {
+      position: "fixed", top: "10px", left: "10px", zIndex: "99999", width: "20px", height: "20px",
+      borderRadius: "50%", border: "2px solid #fff", backgroundColor: "#2ecc71",
+      cursor: "pointer", boxShadow: "0 0 8px rgba(0,0,0,0.5)",
+    });
+    document.body.appendChild(btn);
+    btn.onclick = () => {
+      window.najdBotEnabled = !window.najdBotEnabled;
+      btn.style.backgroundColor = window.najdBotEnabled ? "#2ecc71" : "#e74c3c";
+      addLog(`تم ${window.najdBotEnabled ? 'تفعيل' : 'إيقاف'} البوت`, "WARN");
+    };
+
+    /* ============================================================
+       دالة إرسال النص للشات
+       ============================================================ */
+    let lastBotReplyText = "";
+    let lastBotReplyTime = 0;
+
+    function sendToChat(text) {
+      lastBotReplyText = String(text || "");
+      lastBotReplyTime = Date.now();
+      const input = document.querySelector("#tbox");
+      const btnSend = document.querySelector(".btn-primary") || document.querySelector("#sendbtn");
+      
+      if (!input) {
+        addLog("❌ لم يتم العثور على مربع النص #tbox!", "ERROR");
+        return;
+      }
+      
+      input.value = text;
+      ["input", "change"].forEach(ev => input.dispatchEvent(new Event(ev, { bubbles: true })));
+      
+      setTimeout(() => {
+        if (typeof Tsend_TIGERHOST_UPLOAD === "function") {
+          Tsend_TIGERHOST_UPLOAD();
+        } else if (btnSend) {
+          btnSend.click();
+        }
+        addLog(`تم إرسال جزء للشات بنجاح.`, "SUCCESS");
+      }, 50);
+    }
+
+    /* ============================================================
+       معالجة الرد وتجزئته
+       ============================================================ */
+    function processAndSendReply(fullReply) {
+      let cleanText = fullReply.replace(/[*_~`#\[\]\(\)>\\-]/g, "").trim();
+      const words = cleanText.split(/\s+/).filter(Boolean);
+      const totalWords = words.length;
+
+      if (totalWords === 0) return;
+
+      const chunkSize = 49;
+      const chunks = [];
+      
+      for (let i = 0; i < totalWords; i += chunkSize) {
+        chunks.push(words.slice(i, i + chunkSize).join(" "));
+      }
+
+      addLog(`عدد الكلمات: ${totalWords}. الإرسال على ${chunks.length} رسالة.`, "INFO");
+
+      chunks.forEach((chunk, index) => {
+        setTimeout(() => {
+          sendToChat(chunk);
+        }, index * 1500);
+      });
+    }
+
+    /* ============================================================
+       الإتصال الذكي بـ Gemini API مع ميزة التبديل التلقائي للمفاتيح
+       ============================================================ */
+    async function requestGeminiAPI(promptText, retryCount = 0) {
+      if (apiKeys.length === 0) {
+        addLog("⚠️ لا توجد مفاتيح محفوظة!", "ERROR");
+        return;
+      }
+
+      if (retryCount >= apiKeys.length) {
+        addLog("❌ جميع المفاتيح استنفدت الحد المسموح أو متوقفة!", "ERROR");
+        return;
+      }
+
+      currentKeyIndex = currentKeyIndex % apiKeys.length;
+      let activeKey = apiKeys[currentKeyIndex];
+
+      addLog(`جاري المعالجة باستخدام المفتاح رقم ${currentKeyIndex + 1}/${apiKeys.length}...`, "INFO");
+
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${activeKey}`;
+
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [{ text: settings.systemPrompt }]
+            },
+            contents: [{ role: "user", parts: [{ text: promptText }] }],
+            generationConfig: {
+              temperature: settings.temperature,
+              maxOutputTokens: settings.max_tokens
+            }
+          })
+        });
+
+        const data = await response.json();
+
+        // التبديل التلقائي إذا كان هناك خطأ بسبب استنفاد الرصيد أو الحظر المؤقت
+        if (!response.ok) {
+          if (response.status === 429 || response.status === 403 || response.status === 503) {
+            addLog(`⚠️ المفتاح ${currentKeyIndex + 1} توقف (الخطأ ${response.status}). يتم التبديل تلقائياً...`, "WARN");
+            currentKeyIndex = (currentKeyIndex + 1) % apiKeys.length;
+            localStorage.setItem("MY_GEMINI_KEY_INDEX", currentKeyIndex);
+            
+            return requestGeminiAPI(promptText, retryCount + 1);
+          } else {
+            const errMsg = data?.error?.message || response.statusText;
+            addLog(`فشل الطلب (${response.status}): ${errMsg}`, "ERROR");
+            return;
+          }
+        }
+
+        const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+        if (reply) {
+          addLog("تم الاستلام بنجاح، جاري الإرسال للشات...", "SUCCESS");
+          processAndSendReply(reply);
+        } else {
+          addLog("الرد المستلم من API فارغ!", "WARN");
+        }
+
+      } catch (error) {
+        addLog(`خطأ اتصال: ${error.message}`, "ERROR");
+      }
+    }
+
+    /* ============================================================
+       مراقبة الرسائل (Triggers)
+       ============================================================ */
+    const chatBox = document.querySelector("#d2");
+    if (!chatBox) {
+      addLog("❌ لم يتم العثور على صندوق الشات (#d2)", "ERROR");
+      return;
+    }
+
+    const regexLeadingClean = /^[\s\-،,.]+/;
+
+    const botObserver = new MutationObserver((mutations) => {
+      if (!window.najdBotEnabled) return;
+      for (const m of mutations) {
+        for (const node of m.addedNodes) {
+          if (node.nodeType !== 1) continue;
+
+          const msgNode = node.querySelector(".u-msg, .msg") || node;
+          let msgText = msgNode.textContent || "";
+          
+          if (!msgText || (msgText === lastBotReplyText && Date.now() - lastBotReplyTime < 8000)) continue;
+
+          let trimmed = msgText.trim();
+          if (!trimmed.startsWith("نجد!")) continue;
+
+          const nameEl = node.querySelector(".u-topic, .u-name, .name");
+          if (nameEl && msgText.includes(nameEl.textContent)) {
+            msgText = msgText.replace(nameEl.textContent, "");
+          }
+
+          let cleanMsg = msgText.replace(regexLeadingClean, "").trim();
+          if (!cleanMsg.startsWith("نجد!")) continue;
+
+          const promptMsg = cleanMsg.replace(/^نجد!\s*/, "").trim();
+          
+          if (promptMsg) {
+            addLog(`رصد رسالة: "${promptMsg}"`, "INFO");
+            requestGeminiAPI(promptMsg);
+          }
+        }
+      }
+    });
+
+    botObserver.observe(chatBox, { childList: true, subtree: true });
+
+  }
+  startBot();
+})();
