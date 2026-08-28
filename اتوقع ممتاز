@@ -291,7 +291,7 @@ javascript: (function () {
           if (!msgText || (msgText === lastBotReplyText && Date.now() - lastBotReplyTime < 8000)) continue;
 
           let trimmed = msgText.trim();
-          if (!trimmed.startsWith("نجد!")) continue;
+          if (!trimmed.startsWith("نجد")) continue;
 
           const nameEl = node.querySelector(".u-topic, .u-name, .name");
           if (nameEl && msgText.includes(nameEl.textContent)) {
@@ -299,9 +299,9 @@ javascript: (function () {
           }
 
           let cleanMsg = msgText.replace(regexLeadingClean, "").trim();
-          if (!cleanMsg.startsWith("نجد!")) continue;
+          if (!cleanMsg.startsWith("نجد")) continue;
 
-          const promptMsg = cleanMsg.replace(/^نجد!\s*/, "").trim();
+          const promptMsg = cleanMsg.replace(/^نجد\s*/, "").trim();
           
           if (promptMsg) {
             addLog(`رصد رسالة: "${promptMsg}"`, "INFO");
